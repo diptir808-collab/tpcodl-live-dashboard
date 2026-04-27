@@ -25,7 +25,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+# webdriver_manager removed — using system chromedriver bundled with Chrome .deb
 
 # ===============================================================
 #  CONFIGURATION — all secrets come from Render environment vars
@@ -200,8 +200,28 @@ def get_driver():
     }
     opts.add_experimental_option("prefs", prefs)
 
-    # webdriver-manager auto-downloads the matching ChromeDriver
-    service = Service(ChromeDriverManager().install())
+    # Use system chromedriver installed alongside Chrome .deb — no webdriver-manager
+    # Chrome .deb installs chromedriver at /usr/bin/chromedriver automatically
+    chromedriver_paths = [
+        "/usr/bin/chromedriver",
+        "/usr/local/bin/chromedriver",
+        "/snap/bin/chromedriver",
+    ]
+    chromedriver_bin = None
+    for p in chromedriver_paths:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            chromedriver_bin = p
+            break
+    if not chromedriver_bin:
+        # fallback: find via which
+        result = subprocess.run(["which", "chromedriver"],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            chromedriver_bin = result.stdout.strip()
+    if not chromedriver_bin:
+        raise RuntimeError("chromedriver not found — check Dockerfile installs chromium-driver")
+    log.info(f"Using chromedriver: {chromedriver_bin}")
+    service = Service(chromedriver_bin)
     return webdriver.Chrome(service=service, options=opts)
 
 def solve_captcha(text):
