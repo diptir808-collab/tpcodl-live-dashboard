@@ -1,0 +1,29 @@
+# render.yaml — Render.com deployment config
+# Commit this file to your GitHub repo root.
+# Render reads it automatically when you connect the repo.
+
+services:
+  - type: web                        # web service keeps a port open (required)
+    name: tpcodl-dashboard-worker
+    runtime: docker                  # use our Dockerfile
+    plan: free                       # free tier
+    region: singapore                # closest to Odisha
+    healthCheckPath: /health         # Render pings this to confirm app is alive
+
+    # ── Environment variables ─────────────────────────────────
+    # Set these in Render dashboard → Environment tab (NOT here, to keep secrets safe)
+    envVars:
+      - key: TPCODL_USER
+        sync: false                  # you fill this in Render dashboard
+      - key: TPCODL_PASS
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false                  # e.g. yourname/tpcodl-dashboard
+      - key: GITHUB_BRANCH
+        value: gh-pages
+      - key: PUBLIC_URL
+        sync: false                  # e.g. https://yourname.github.io/tpcodl-dashboard/
+      - key: PORT
+        value: "10000"
