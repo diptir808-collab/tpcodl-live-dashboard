@@ -191,6 +191,11 @@ def get_driver():
     opts.add_argument("--disable-notifications")
     opts.add_argument("--disable-extensions")
     opts.add_argument(f"--user-data-dir=/app/downloads/chrome-profile")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--ignore-certificate-errors")
+    opts.add_argument("--allow-running-insecure-content")
+    opts.add_argument("--dns-prefetch-disable")
+    opts.add_argument("--page-load-strategy=eager")   # don't wait for all resources
 
     prefs = {
         "download.default_directory":   CONFIG["download_dir"],
@@ -222,7 +227,10 @@ def get_driver():
         raise RuntimeError("chromedriver not found — check Dockerfile installs chromium-driver")
     log.info(f"Using chromedriver: {chromedriver_bin}")
     service = Service(chromedriver_bin)
-    return webdriver.Chrome(service=service, options=opts)
+    driver = webdriver.Chrome(service=service, options=opts)
+    driver.set_page_load_timeout(60)   # give portal 60s max to load
+    driver.set_script_timeout(30)
+    return driver
 
 def solve_captcha(text):
     m = re.search(r'(\d+)\s*([\+\-\*\/])\s*(\d+)', text)
@@ -230,22 +238,29 @@ def solve_captcha(text):
 
 def login(driver, wait):
     log.info("Logging in …")
-    # Hit root URL — ASP.NET redirects to session-token URL automatically
-    # e.g. https://kavach.tpodisha.com/(S(xxxx...))/LoginPage
-    driver.get(CONFIG["url"])
-    time.sleep(5)
-    # If redirected to a session URL, wait for login form to appear
-    # If still on root after 5s, try /LoginPage explicitly
-    if "LoginPage" not in driver.current_url and "HomePage" not in driver.current_url:
+    # Load portal — tries root first (ASP.NET generates session token),
+    # falls back to direct LoginPage if root times out
+    portal_loaded = False
+    for attempt_url in [CONFIG["url"], "https://kavach.tpodisha.com/LoginPage"]:
         try:
-            # Wait for redirect to complete
-            WebDriverWait(driver, 15).until(
-                lambda d: "LoginPage" in d.current_url or "HomePage" in d.current_url
-                          or d.find_elements(By.ID, "txtLogin")
+            log.info(f"Trying portal URL: {attempt_url}")
+            driver.get(attempt_url)
+            # Wait up to 30s for login form or redirect
+            WebDriverWait(driver, 30).until(
+                lambda d: d.find_elements(By.ID, "txtLogin")
+                          or "LoginPage" in d.current_url
+                          or "HomePage" in d.current_url
             )
-        except Exception:
-            log.warning(f"No redirect detected, current URL: {driver.current_url}")
-    log.info(f"Login page URL: {driver.current_url}")
+            log.info(f"Portal loaded OK → {driver.current_url}")
+            portal_loaded = True
+            break
+        except Exception as e:
+            log.warning(f"Portal load attempt failed ({attempt_url}): {e}")
+            time.sleep(3)
+
+    if not portal_loaded:
+        log.error("Portal unreachable from this server — all URL attempts failed")
+        return False
     time.sleep(2)
     try:
         wait.until(EC.presence_of_element_located((By.ID, "txtLogin"))).send_keys(CONFIG["username"])
