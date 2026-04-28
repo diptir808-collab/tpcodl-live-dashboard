@@ -183,18 +183,23 @@ def publish_to_github(local_html):
 # ===============================================================
 def get_driver():
     opts = Options()
-    # NO headless — Chrome runs on Xvfb virtual display (same as real PC screen)
-    # This is why the portal works: it sees a real 1920x1080 display via Xvfb
-    opts.add_argument("--no-sandbox")             # required inside Docker
-    opts.add_argument("--disable-dev-shm-usage")  # /dev/shm small in containers
+    # Running via Xvfb virtual display — NO headless flag
+    # This matches exactly how Chrome runs on your PC
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")  # prevents renderer crash in Docker
+    opts.add_argument("--shm-size=2g")             # give Chrome 2GB shared memory
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--start-maximized")
     opts.add_argument("--disable-notifications")
     opts.add_argument("--disable-extensions")
-    opts.add_argument(f"--user-data-dir=/app/downloads/chrome-profile")
+    opts.add_argument("--disable-infobars")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument(f"--user-data-dir=/app/downloads/chrome-profile")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
     prefs = {
         "download.default_directory":   CONFIG["download_dir"],
         "download.prompt_for_download": False,
@@ -203,30 +208,24 @@ def get_driver():
     }
     opts.add_experimental_option("prefs", prefs)
 
-    # Use system chromedriver installed alongside Chrome .deb — no webdriver-manager
-    # Chrome .deb installs chromedriver at /usr/bin/chromedriver automatically
-    chromedriver_paths = [
-        "/usr/bin/chromedriver",
-        "/usr/local/bin/chromedriver",
-        "/snap/bin/chromedriver",
-    ]
+    # Use system chromedriver installed by Dockerfile
     chromedriver_bin = None
-    for p in chromedriver_paths:
+    for p in ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver"]:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             chromedriver_bin = p
             break
     if not chromedriver_bin:
-        # fallback: find via which
         result = subprocess.run(["which", "chromedriver"],
                                 capture_output=True, text=True)
         if result.returncode == 0:
             chromedriver_bin = result.stdout.strip()
     if not chromedriver_bin:
-        raise RuntimeError("chromedriver not found — check Dockerfile installs chromium-driver")
+        raise RuntimeError("chromedriver not found")
+
     log.info(f"Using chromedriver: {chromedriver_bin}")
     service = Service(chromedriver_bin)
     driver = webdriver.Chrome(service=service, options=opts)
-    driver.set_page_load_timeout(60)   # give portal 60s max to load
+    driver.set_page_load_timeout(60)
     driver.set_script_timeout(30)
     return driver
 
@@ -237,52 +236,47 @@ def solve_captcha(text):
 def login(driver, wait):
     log.info("Logging in ...")
     log.info(f"Loading portal: {CONFIG['url']}")
-    driver.get(CONFIG["url"])
     try:
-        # Wait for page load
-        wait.until(EC.presence_of_element_located((By.ID, "txtLogin")))
+        driver.get(CONFIG["url"])
+        # Wait up to 45s for the DISCOM dropdown — exact id from page inspect
+        wait45 = WebDriverWait(driver, 45)
+        wait45.until(EC.presence_of_element_located((By.ID, "ddlDiscom")))
         log.info("Login page loaded OK")
         time.sleep(2)
 
-        # DISCOM dropdown - select TPCODL
+        # DISCOM dropdown — id="ddlDiscom" confirmed from page inspect
         try:
-            discom_el = None
-            for xpath in [
-                "//select[contains(@id,'iscom')]",
-                "//label[contains(text(),'DISCOM')]/..//select",
-                "(//select)[1]",
-            ]:
-                try:
-                    discom_el = driver.find_element(By.XPATH, xpath)
-                    if discom_el: break
-                except: continue
-            if discom_el:
-                sel = Select(discom_el)
-                try: sel.select_by_visible_text("TPCODL")
-                except:
-                    for opt in sel.options:
-                        if "TPCODL" in opt.text.upper():
-                            driver.execute_script("arguments[0].selected=true;", opt)
-                            driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", discom_el)
-                            break
-                log.info("DISCOM = TPCODL selected")
-                time.sleep(1)
+            discom_el = driver.find_element(By.ID, "ddlDiscom")
+            sel = Select(discom_el)
+            try:
+                sel.select_by_visible_text("TPCODL")
+            except:
+                for opt in sel.options:
+                    if "TPCODL" in opt.text.upper():
+                        driver.execute_script("arguments[0].selected=true;", opt)
+                        driver.execute_script(
+                            "arguments[0].dispatchEvent(new Event('change'));", discom_el)
+                        break
+            log.info(f"DISCOM selected: {discom_el.get_attribute('value')}")
+            time.sleep(1)
         except Exception as e:
-            log.warning(f"DISCOM select: {e}")
+            log.warning(f"DISCOM error: {e}")
 
-        # User ID
-        uid = driver.find_element(By.ID, "txtLogin")
+        # User ID — id="txtLogin"
+        uid = wait45.until(EC.presence_of_element_located((By.ID, "txtLogin")))
         uid.clear()
         uid.send_keys(CONFIG["username"])
+        log.info("User ID entered")
         time.sleep(0.3)
 
-        # Password
+        # Password — id="txtPassword"
         pwd = driver.find_element(By.ID, "txtPassword")
         pwd.clear()
         pwd.send_keys(CONFIG["password"])
+        log.info("Password entered")
         time.sleep(0.3)
 
-        # Active Directory checkbox
+        # Active Directory Authentication checkbox
         try:
             cb = driver.find_element(By.XPATH, "//input[@type='checkbox']")
             if not cb.is_selected():
@@ -292,40 +286,48 @@ def login(driver, wait):
             log.warning(f"Checkbox: {e}")
         time.sleep(0.3)
 
-        # Captcha - read equation from page and solve
+        # Captcha — read equation text and solve math
         try:
             cap_text = ""
-            for xpath in [
-                "//*[contains(@id,'lblCaptcha')]",
-                "//*[contains(@id,'Captcha') or contains(@id,'captcha')]",
+            # Try common captcha label selectors
+            for by, sel in [
+                (By.ID, "lblCaptcha"),
+                (By.XPATH, "//*[contains(@id,'Captcha') or contains(@id,'captcha')]"),
+                (By.XPATH, "//*[contains(@class,'captcha')]"),
             ]:
                 try:
-                    el = driver.find_element(By.XPATH, xpath)
+                    el = driver.find_element(by, sel)
                     cap_text = el.get_attribute("value") or el.text or ""
-                    if cap_text.strip(): break
-                except: continue
+                    if cap_text.strip():
+                        break
+                except:
+                    continue
 
+            # Fallback: scan body text for math equation like "24 + 4"
             if not cap_text:
-                body = driver.find_element(By.TAG_NAME, "body").text
-                m = re.search(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", body)
-                if m: cap_text = m.group(0)
+                body_text = driver.find_element(By.TAG_NAME, "body").text
+                m = re.search(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", body_text)
+                if m:
+                    cap_text = m.group(0)
 
             ans = solve_captcha(cap_text)
             if ans:
                 cap_inp = driver.find_element(By.XPATH,
-                    "//input[contains(@placeholder,'captcha') or contains(@placeholder,'Captcha') or contains(@id,'Captcha')]")
+                    "//input[contains(@placeholder,'captcha') or "
+                    "contains(@placeholder,'Captcha') or "
+                    "contains(@id,'Captcha') or contains(@id,'captcha')]")
                 cap_inp.clear()
                 cap_inp.send_keys(ans)
-                log.info(f"Captcha: {cap_text} = {ans}")
+                log.info(f"Captcha: '{cap_text}' = {ans}")
             else:
-                log.warning(f"Captcha not solved from: {repr(cap_text)}")
+                log.warning(f"Captcha unsolved — text was: '{cap_text}'")
         except Exception as e:
             log.warning(f"Captcha error: {e}")
         time.sleep(0.3)
 
-        # Submit
+        # Click SUBMIT button
         try:
-            btn = wait.until(EC.element_to_be_clickable(
+            btn = wait45.until(EC.element_to_be_clickable(
                 (By.XPATH, "//button[contains(text(),'SUBMIT') or contains(text(),'Submit')]")))
             driver.execute_script("arguments[0].click();", btn)
             log.info("SUBMIT clicked")
@@ -333,21 +335,26 @@ def login(driver, wait):
             driver.find_element(By.ID, "txtPassword").send_keys(Keys.ENTER)
             log.info("SUBMIT via Enter")
 
-        time.sleep(5)
+        time.sleep(6)
 
+        # Verify login
         if "LoginPage" in driver.current_url:
-            try: driver.save_screenshot("/app/downloads/login_failed.png")
-            except: pass
-            log.error(f"Login failed. URL: {driver.current_url}")
+            try:
+                driver.save_screenshot("/app/downloads/login_failed.png")
+            except:
+                pass
+            log.error(f"Login FAILED — still on LoginPage")
             return False
 
-        log.info(f"Login OK - URL: {driver.current_url}")
+        log.info(f"Login OK — {driver.current_url}")
         return True
 
     except Exception as e:
         log.error(f"Login exception: {e}")
-        try: driver.save_screenshot("/app/downloads/login_error.png")
-        except: pass
+        try:
+            driver.save_screenshot("/app/downloads/login_error.png")
+        except:
+            pass
         return False
 
 def download_report(driver, wait, report_type):
