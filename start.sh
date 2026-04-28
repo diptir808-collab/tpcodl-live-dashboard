@@ -1,14 +1,13 @@
 #!/bin/bash
-# Start Xvfb virtual display — gives Chrome a real screen to render on
-# This is what makes the portal work on the server exactly like on your PC
+# Increase /dev/shm size for Chrome renderer stability
+mount -t tmpfs -o size=2g tmpfs /dev/shm 2>/dev/null || true
 
-echo "Starting Xvfb virtual display on :99 ..."
-Xvfb :99 -screen 0 1920x1080x24 -ac &
+# Start Xvfb virtual display (1920x1080, 24-bit color)
+echo "Starting Xvfb virtual display..."
+Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
 export DISPLAY=:99
+sleep 3
+echo "Xvfb ready on DISPLAY=$DISPLAY"
 
-# Wait for Xvfb to be ready
-sleep 2
-echo "Xvfb started. DISPLAY=$DISPLAY"
-
-# Start the Python worker
+# Start Python worker
 exec python main.py
