@@ -1,17 +1,15 @@
 # ─────────────────────────────────────────────────────────────
 #  TPCODL Dashboard — Render.com cloud worker
-#  Python 3.11 + Chrome + ChromeDriver (system install, no webdriver-manager)
+#  Key fix: Xvfb virtual display — Chrome runs as if it has a
+#  real screen, exactly like your PC. No headless mode.
 # ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# ── System dependencies ───────────────────────────────────────
+# ── System dependencies + Xvfb virtual display ───────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
-    curl \
-    git \
-    unzip \
-    gnupg \
-    ca-certificates \
+    wget curl git unzip gnupg ca-certificates \
+    xvfb \
+    x11-utils \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -31,8 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxshmfence1 \
     libx11-xcb1 \
     xdg-utils \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Google Chrome (direct .deb) ───────────────────────────────
 RUN wget -q -O /tmp/chrome.deb \
@@ -40,17 +37,13 @@ RUN wget -q -O /tmp/chrome.deb \
     && apt-get update \
     && apt-get install -y --no-install-recommends /tmp/chrome.deb \
     && rm /tmp/chrome.deb \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ── ChromeDriver — matching version via Chrome for Testing ────
-# Reads the installed Chrome version and downloads exact matching ChromeDriver
+# ── ChromeDriver — exact version match ───────────────────────
 RUN CHROME_VER=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+') \
-    && echo "Chrome version: $CHROME_VER" \
-    && MAJOR=$(echo $CHROME_VER | cut -d. -f1) \
-    && DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}/linux64/chromedriver-linux64.zip" \
-    && echo "Downloading ChromeDriver from: $DRIVER_URL" \
-    && wget -q -O /tmp/chromedriver.zip "$DRIVER_URL" \
+    && echo "Chrome: $CHROME_VER" \
+    && wget -q -O /tmp/chromedriver.zip \
+       "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VER}/linux64/chromedriver-linux64.zip" \
     && unzip -q /tmp/chromedriver.zip -d /tmp/ \
     && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
     && chmod +x /usr/bin/chromedriver \
@@ -62,11 +55,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Application source ────────────────────────────────────────
+# ── App source ────────────────────────────────────────────────
 COPY . .
-
-# ── Runtime directories ───────────────────────────────────────
 RUN mkdir -p /app/downloads /app/repo
 
-# ── Entry point ───────────────────────────────────────────────
-CMD ["python", "main.py"]
+# ── Startup: launch Xvfb virtual display then run app ────────
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+CMD ["/start.sh"]
