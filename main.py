@@ -235,38 +235,120 @@ def solve_captcha(text):
     return str(eval(m.group(1) + m.group(2) + m.group(3))) if m else ""
 
 def login(driver, wait):
-    log.info("Logging in …")
-    # Load portal directly — same as PC script, Xvfb provides real display
+    log.info("Logging in ...")
     log.info(f"Loading portal: {CONFIG['url']}")
     driver.get(CONFIG["url"])
-    time.sleep(3)
     try:
-        wait.until(EC.presence_of_element_located((By.ID, "txtLogin"))).send_keys(CONFIG["username"])
-        driver.find_element(By.ID, "txtPassword").send_keys(CONFIG["password"])
+        # Wait for page load
+        wait.until(EC.presence_of_element_located((By.ID, "txtLogin")))
+        log.info("Login page loaded OK")
+        time.sleep(2)
+
+        # DISCOM dropdown - select TPCODL
+        try:
+            discom_el = None
+            for xpath in [
+                "//select[contains(@id,'iscom')]",
+                "//label[contains(text(),'DISCOM')]/..//select",
+                "(//select)[1]",
+            ]:
+                try:
+                    discom_el = driver.find_element(By.XPATH, xpath)
+                    if discom_el: break
+                except: continue
+            if discom_el:
+                sel = Select(discom_el)
+                try: sel.select_by_visible_text("TPCODL")
+                except:
+                    for opt in sel.options:
+                        if "TPCODL" in opt.text.upper():
+                            driver.execute_script("arguments[0].selected=true;", opt)
+                            driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", discom_el)
+                            break
+                log.info("DISCOM = TPCODL selected")
+                time.sleep(1)
+        except Exception as e:
+            log.warning(f"DISCOM select: {e}")
+
+        # User ID
+        uid = driver.find_element(By.ID, "txtLogin")
+        uid.clear()
+        uid.send_keys(CONFIG["username"])
+        time.sleep(0.3)
+
+        # Password
+        pwd = driver.find_element(By.ID, "txtPassword")
+        pwd.clear()
+        pwd.send_keys(CONFIG["password"])
+        time.sleep(0.3)
+
+        # Active Directory checkbox
         try:
             cb = driver.find_element(By.XPATH, "//input[@type='checkbox']")
             if not cb.is_selected():
                 driver.execute_script("arguments[0].click();", cb)
-        except: pass
-        try:
-            cap = wait.until(EC.presence_of_element_located((By.ID, "lblCaptcha")))
-            ans = solve_captcha(cap.get_attribute("value") or cap.text)
-            if ans:
-                driver.find_element(By.XPATH, "//input[contains(@placeholder,'captcha')]").send_keys(ans)
-                log.info(f"Captcha solved: {ans}")
+            log.info("AD Auth checkbox ticked")
         except Exception as e:
-            log.warning(f"Captcha skip: {e}")
+            log.warning(f"Checkbox: {e}")
+        time.sleep(0.3)
+
+        # Captcha - read equation from page and solve
         try:
-            btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'SUBMIT')]")))
+            cap_text = ""
+            for xpath in [
+                "//*[contains(@id,'lblCaptcha')]",
+                "//*[contains(@id,'Captcha') or contains(@id,'captcha')]",
+            ]:
+                try:
+                    el = driver.find_element(By.XPATH, xpath)
+                    cap_text = el.get_attribute("value") or el.text or ""
+                    if cap_text.strip(): break
+                except: continue
+
+            if not cap_text:
+                body = driver.find_element(By.TAG_NAME, "body").text
+                m = re.search(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", body)
+                if m: cap_text = m.group(0)
+
+            ans = solve_captcha(cap_text)
+            if ans:
+                cap_inp = driver.find_element(By.XPATH,
+                    "//input[contains(@placeholder,'captcha') or contains(@placeholder,'Captcha') or contains(@id,'Captcha')]")
+                cap_inp.clear()
+                cap_inp.send_keys(ans)
+                log.info(f"Captcha: {cap_text} = {ans}")
+            else:
+                log.warning(f"Captcha not solved from: {repr(cap_text)}")
+        except Exception as e:
+            log.warning(f"Captcha error: {e}")
+        time.sleep(0.3)
+
+        # Submit
+        try:
+            btn = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//button[contains(text(),'SUBMIT') or contains(text(),'Submit')]")))
             driver.execute_script("arguments[0].click();", btn)
+            log.info("SUBMIT clicked")
         except:
             driver.find_element(By.ID, "txtPassword").send_keys(Keys.ENTER)
+            log.info("SUBMIT via Enter")
+
         time.sleep(5)
+
         if "LoginPage" in driver.current_url:
-            log.error("Login failed"); return False
-        log.info("Login OK ✓"); return True
+            try: driver.save_screenshot("/app/downloads/login_failed.png")
+            except: pass
+            log.error(f"Login failed. URL: {driver.current_url}")
+            return False
+
+        log.info(f"Login OK - URL: {driver.current_url}")
+        return True
+
     except Exception as e:
-        log.error(f"Login error: {e}"); return False
+        log.error(f"Login exception: {e}")
+        try: driver.save_screenshot("/app/downloads/login_error.png")
+        except: pass
+        return False
 
 def download_report(driver, wait, report_type):
     today = datetime.now().strftime("%Y-%m-%d")
