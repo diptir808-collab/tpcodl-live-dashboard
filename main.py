@@ -32,7 +32,7 @@ from selenium.webdriver.chrome.options import Options
 # ===============================================================
 CONFIG = {
     # ── TPCODL portal ─────────────────────────────────────────
-    "url":              "https://kavach.tpodisha.com/LoginPage",
+    "url":              "https://kavach.tpodisha.com/",
     "username":         os.environ.get("TPCODL_USER",     "dipti.ranjan"),
     "password":         os.environ.get("TPCODL_PASS",     "Apr@202678"),
 
@@ -230,8 +230,23 @@ def solve_captcha(text):
 
 def login(driver, wait):
     log.info("Logging in …")
+    # Hit root URL — ASP.NET redirects to session-token URL automatically
+    # e.g. https://kavach.tpodisha.com/(S(xxxx...))/LoginPage
     driver.get(CONFIG["url"])
-    time.sleep(3)
+    time.sleep(5)
+    # If redirected to a session URL, wait for login form to appear
+    # If still on root after 5s, try /LoginPage explicitly
+    if "LoginPage" not in driver.current_url and "HomePage" not in driver.current_url:
+        try:
+            # Wait for redirect to complete
+            WebDriverWait(driver, 15).until(
+                lambda d: "LoginPage" in d.current_url or "HomePage" in d.current_url
+                          or d.find_elements(By.ID, "txtLogin")
+            )
+        except Exception:
+            log.warning(f"No redirect detected, current URL: {driver.current_url}")
+    log.info(f"Login page URL: {driver.current_url}")
+    time.sleep(2)
     try:
         wait.until(EC.presence_of_element_located((By.ID, "txtLogin"))).send_keys(CONFIG["username"])
         driver.find_element(By.ID, "txtPassword").send_keys(CONFIG["password"])
