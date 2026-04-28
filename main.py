@@ -183,19 +183,17 @@ def publish_to_github(local_html):
 # ===============================================================
 def get_driver():
     opts = Options()
-    opts.add_argument("--headless=new")           # headless — no display on server
+    # NO headless — Chrome runs on Xvfb virtual display (same as real PC screen)
+    # This is why the portal works: it sees a real 1920x1080 display via Xvfb
     opts.add_argument("--no-sandbox")             # required inside Docker
-    opts.add_argument("--disable-dev-shm-usage")  # /dev/shm is small in containers
+    opts.add_argument("--disable-dev-shm-usage")  # /dev/shm small in containers
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--start-maximized")
     opts.add_argument("--disable-notifications")
     opts.add_argument("--disable-extensions")
     opts.add_argument(f"--user-data-dir=/app/downloads/chrome-profile")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--ignore-certificate-errors")
-    opts.add_argument("--allow-running-insecure-content")
-    opts.add_argument("--dns-prefetch-disable")
-    opts.add_argument("--page-load-strategy=eager")   # don't wait for all resources
 
     prefs = {
         "download.default_directory":   CONFIG["download_dir"],
@@ -238,30 +236,10 @@ def solve_captcha(text):
 
 def login(driver, wait):
     log.info("Logging in …")
-    # Load portal — tries root first (ASP.NET generates session token),
-    # falls back to direct LoginPage if root times out
-    portal_loaded = False
-    for attempt_url in [CONFIG["url"], "https://kavach.tpodisha.com/LoginPage"]:
-        try:
-            log.info(f"Trying portal URL: {attempt_url}")
-            driver.get(attempt_url)
-            # Wait up to 30s for login form or redirect
-            WebDriverWait(driver, 30).until(
-                lambda d: d.find_elements(By.ID, "txtLogin")
-                          or "LoginPage" in d.current_url
-                          or "HomePage" in d.current_url
-            )
-            log.info(f"Portal loaded OK → {driver.current_url}")
-            portal_loaded = True
-            break
-        except Exception as e:
-            log.warning(f"Portal load attempt failed ({attempt_url}): {e}")
-            time.sleep(3)
-
-    if not portal_loaded:
-        log.error("Portal unreachable from this server — all URL attempts failed")
-        return False
-    time.sleep(2)
+    # Load portal directly — same as PC script, Xvfb provides real display
+    log.info(f"Loading portal: {CONFIG['url']}")
+    driver.get(CONFIG["url"])
+    time.sleep(3)
     try:
         wait.until(EC.presence_of_element_located((By.ID, "txtLogin"))).send_keys(CONFIG["username"])
         driver.find_element(By.ID, "txtPassword").send_keys(CONFIG["password"])
